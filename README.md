@@ -9,3 +9,7 @@ This repository contains implementations of NLP deep learning archtecture. The i
   - Luong Attention
     - global attention
     - local attention
+    
+    
+2. Sub-word Model
+  - Byte Pair Encoding (BPE)
