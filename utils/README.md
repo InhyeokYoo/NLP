@@ -5,3 +5,7 @@ This repository contains the useful implementations for NLP deep learning archte
 ## List of the implementation
 
 1. torchtext
+- torchtext tutorial: Field, Vocab, Iterator, DataSet
+
+2. DataLoader
+- dataloader for text data set
