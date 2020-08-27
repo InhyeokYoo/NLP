@@ -1,12 +1,11 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 
 class Transformer(nn.Module):
-    def __init__(self, src_size: int, trg_size: int, seq_len: int, d_model: int, d_ff: int, 
+    def __init__(self, src_size: int, trg_size: int, seq_len: int, d_model: int, d_ff: int, enc_pad_idx, dec_pad_idx, device,
                  num_encoders: int=6, enc_num_heads: int=8, 
                  num_decoders: int=6, dec_num_heads: int=8,
-                 teacher_forcing: float=0.5, dropout: float=0.1):
+                 dropout: float=0.1):
         super(Transformer, self).__init__()
         
         self.src_size = src_size
@@ -14,20 +13,26 @@ class Transformer(nn.Module):
         self.d_model = d_model
         self.d_ff = d_ff
         self.seq_len = seq_len
+        self.enc_pad_idx = enc_pad_idx
+        self.dec_pad_idx = dec_pad_idx
+        self.device = device
 
         self.encoder = Encoders(self.src_size, self.seq_len, self.d_model, self.d_ff, num_encoders, enc_num_heads, dropout=dropout)
         self.decoder = Decoders(self.trg_size, self.seq_len, self.d_model, self.d_ff, num_decoders, dec_num_heads, dropout=dropout)
-        self.teacher_forcing = teacher_forcing
         
         self.projection = nn.Linear(d_model, self.trg_size)
-        self.softmax = nn.LogSoftmax(dim=-1)
 
     def forward(self, sources, targets):
-        enc_attn_score = self.encoder(sources) # [B, S, d_model]
-        dec_outputs = self.decoder(sources, enc_attn_score, targets) # [B, S, d_model]
+        # masking
+        dec_pad_mask = get_attn_pad_mask(targets, targets, self.dec_pad_idx).to(self.device) # [B, S, S]
+        enc_pad_mask = get_attn_pad_mask(sources, sources, self.enc_pad_idx).to(self.device) # [B, S, S]
+
+        enc_attn_score = self.encoder(sources, enc_pad_mask) # [B, S, d_model]
+
+        enc_dec_mask = get_attn_subsequent_mask(enc_attn_score).to(self.device)
+        dec_outputs = self.decoder(enc_attn_score, targets, enc_pad_mask, dec_pad_mask, enc_dec_mask) # [B, S, d_model]
         logit = self.projection(dec_outputs) # [B, S, trg_vocab]
-        output = self.softmax(logit) # [B, S, trg_vocab]
-        return output
+        return logit
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, seq_len: int, dropout: int=0.1):
@@ -56,21 +61,18 @@ class Encoders(nn.Module):
         super(Encoders, self).__init__()
         self.d_model = d_model
         self.voc_size = voc_size
-        # x_emb
+
         self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
-        # pos
         self.pos_enc = PositionalEncoding(d_model, seq_len, dropout)
         self.models = nn.ModuleList([Encoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_encoder)])
         
-    def forward(self, x):
+    def forward(self, x, enc_mask):
         # input: [B, S]
         x_emb = self.emb(x) * torch.sqrt(torch.tensor(self.d_model).float()) # -> [B, S, D_model]
         x_emb = self.pos_enc(x_emb) # [B, S, d_model]
-        # get pad index
-        mask = get_attn_pad_mask(x, x, PAD_IDX).to(DEVICE) # [B, S_q, S_k]
-        
+    
         for model in self.models:
-            x_emb = model(x_emb, mask)
+            x_emb = model(x_emb, enc_mask)
 
         return x_emb
 
@@ -79,19 +81,20 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
 
         self.attn = MultiHeadAttn(d_model, num_enc_heads)
-        # re-use X
-        self.layer_norm1 = nn.LayerNorm([seq_len, d_model])
+        self.layer_norm1 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
         self.fc = PositionWiseFC(d_model, d_ff)
-        self.layer_norm2 = nn.LayerNorm([seq_len, d_model])
+        self.layer_norm2 = nn.LayerNorm(d_model)
         self.dropout2 = nn.Dropout(dropout)
         
-
     def forward(self, x, pad_mask):
-        attn_score = self.layer_norm1(self.attn(x, x, x, pad_mask) + x)
+        # x+SubLayer(LayerNorm(x))
+        layer_norm_x = self.layer_norm1(x)
+        attn_score = self.attn(layer_norm_x, layer_norm_x, layer_norm_x, pad_mask) + x
         attn_score = self.dropout1(attn_score)
 
-        attn_score = self.layer_norm2(self.fc(attn_score) + attn_score)
+        # x+SubLayer(LayerNorm(x))
+        attn_score = self.fc(self.layer_norm2(attn_score)) + attn_score
         attn_score = self.dropout2(attn_score)
 
         return attn_score # [B, S, D_model]
@@ -101,18 +104,17 @@ class Decoders(nn.Module):
         super(Decoders, self).__init__()
         self.d_model = d_model
         self.voc_size = voc_size
+
         self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
         self.pos_enc = PositionalEncoding(d_model, seq_len, dropout)
         self.models = nn.ModuleList([Decoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_decoder)])
 
-    def forward(self, x, enc_attn_score, y):
+    def forward(self, enc_attn_score, y, enc_pad_mask, dec_pad_mask, enc_dec_mask):
         # [B, S]
         y_emb = self.emb(y) * torch.sqrt(torch.tensor(self.d_model).float()) # [B, S, D_model]
         y_emb = self.pos_enc(y_emb)
+
         # mask
-        dec_pad_mask = get_attn_pad_mask(y, y, PAD_IDX).to(DEVICE) # [B, S, S]
-        enc_pad_mask = get_attn_pad_mask(x, x, PAD_IDX).to(DEVICE) # [B, S, S]
-        enc_dec_mask = get_attn_subsequent_mask(enc_attn_score).to(DEVICE)
         dec_mask = dec_pad_mask + enc_dec_mask # masking if larger than 1
         
         for model in self.models:
@@ -125,13 +127,13 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
 
         self.self_attn = MultiHeadAttn(d_model, num_heads)
-        self.layer_norm1 = nn.LayerNorm([seq_len, d_model])
+        self.layer_norm1 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
         self.enc_dec_attn = MultiHeadAttn(d_model, num_heads)
-        self.layer_norm2 = nn.LayerNorm([seq_len, d_model])
+        self.layer_norm2 = nn.LayerNorm(d_model)
         self.dropout2 = nn.Dropout(dropout)
         self.fc = PositionWiseFC(d_model, d_ff)
-        self.layer_norm3 = nn.LayerNorm([seq_len, d_model])
+        self.layer_norm3 = nn.LayerNorm(d_model)
         self.dropout3 = nn.Dropout(dropout)
 
     def forward(self, enc_attn_score, y, dec_mask, enc_mask):
@@ -142,11 +144,21 @@ class Decoder(nn.Module):
             dec_mask: [Batch, Seq len(q), Seq_len(k)]. masking if > 1. It includes both padding mask and subsequence mask of decoders.
             enc_mask: [Batch, Seq len(q), Seq_len(k)]. masking if > 1. The mask for padding of the encoder
         '''
-        self_attn_score = self.layer_norm1(y + self.self_attn(y, y, y, dec_mask))
+        # decoder self attention: x+SubLayer(LayerNorm(x))
+        layer_norm_y = self.layer_norm1(y)
+        self_attn_score = y + self.self_attn(layer_norm_y, layer_norm_y, layer_norm_y, dec_mask)
         self_attn_score = self.dropout1(self_attn_score)
-        attn_score = self.layer_norm2(self_attn_score + self.enc_dec_attn(enc_attn_score, enc_attn_score, self_attn_score, enc_mask))
+
+        # enc_dec self attention: x+SubLayer(LayerNorm(x))
+        attn_score = self.enc_dec_attn(
+                        self.layer_norm2(enc_attn_score), 
+                        self.layer_norm2(enc_attn_score), 
+                        self.layer_norm2(self_attn_score), 
+                        enc_mask) + self_attn_score
         attn_score = self.dropout2(attn_score)
-        attn_score = self.layer_norm3(attn_score + self.fc(attn_score))
+
+        # Position-wise feed forward network: x+SubLayer(LayerNorm(x))
+        attn_score = self.fc(self.layer_norm3(attn_score)) + attn_score
         attn_score = self.dropout3(attn_score)
         
         return attn_score
@@ -247,36 +259,6 @@ class PositionWiseFC(nn.Module):
 
         return x
 
-# reference: https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/master/train.py#L38
-def cal_loss(pred, gt, ignore_idx, smoothing=None):
-    '''
-    Calculate cross-entropy loss between very before layer of softmax and ground truth(gt)
-    param:
-        pred: predicted value (before applying softmax)
-        gt: grount truth
-        ignore_idx: index that will be ignored when calculating its probability
-        smoothing: if float is passed, then apply label smoothing
-    
-    shape:
-        pred: [Batch_size * (Seq_len-1), Tgt_vocab_size]
-        gt: [Batch_size * (Seq_len-1)]
-    '''
-    if smoothing != None:
-        confidence = 1 - smoothing
-        target_vocab_size = pred.size(1)
-
-        # generate one-hot vector through the probability that model generates
-        one_hot = torch.zeros_like(pred).scatter(1, gt.view(-1, 1), 1)
-        one_hot = one_hot * confidence + (1 - one_hot) * smoothing / target_vocab_size
-        log_prob = nn.functional.softmax(one_hot, dim=-1)
-        
-        non_pad_mask = gt.ne(ignore_idx) # where gt != ignore_index
-        loss = - (one_hot * log_prob).sum(dim=-1) # NLL-Loss: $\sum_x log(p_{theta}(y \rvert x)) q(w)
-        loss = loss.masked_select(non_pad_mask).sum() # gather all values where mask == True and return 1-D array
-    else:
-        loss = nn.functional.cross_entropy(pred, gt, ignore_idx=ignore_idx, reduction='sum')
-        
-    return loss
 
 # reference: https://github.com/graykode/nlp-tutorial/blob/master/5-1.Transformer/Transformer(Greedy_decoder)_Torch.ipynb
 def get_attn_pad_mask(seq_q, seq_k, pad_idx):
@@ -296,3 +278,24 @@ def beam_search():
     $s(Y, X)=log(P(Y \rvert X))/lp(Y)$
     $lp(Y) = (5 + \rvert Y \rvert)^\alpha$
     '''
+
+# reference: https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/master/train.py#L38
+def cal_loss(pred, gold, trg_pad_idx, smoothing=False):
+    ''' Calculate cross entropy loss, apply label smoothing if needed. '''
+
+    gold = gold.contiguous().view(-1)
+
+    if smoothing:
+        eps = 0.1
+        n_class = pred.size(1)
+
+        one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
+        one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
+        log_prb = nn.functional.log_softmax(pred, dim=1)
+
+        non_pad_mask = gold.ne(trg_pad_idx)
+        loss = -(one_hot * log_prb).sum(dim=1)
+        loss = loss.masked_select(non_pad_mask).mean()  # average later
+    else:
+        loss = nn.functional.cross_entropy(pred, gold, ignore_index=trg_pad_idx, reduction='sum')
+    return loss
