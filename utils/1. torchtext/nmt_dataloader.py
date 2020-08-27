@@ -35,17 +35,13 @@ class DataLoader():
             train,
             batch_size=batch_size,
             device=device,
-            shuffle=shuffle,
-            sort_key=lambda x: len(x.tgt) + (max_length * len(x.src)),
-            sort_within_batch=True,)
+            shuffle=shuffle,)
 
         self.valid_iter = data.BucketIterator(
             valid,
             batch_size=batch_size,
             device=device,
-            shuffle=False,
-            sort_key=lambda x: len(x.tgt) + (max_length * len(x.src)),
-            sort_within_batch=True,)
+            shuffle=False,)
 
         self.src.build_vocab(train, max_size=max_vocab)
         self.tgt.build_vocab(train, max_size=max_vocab)
