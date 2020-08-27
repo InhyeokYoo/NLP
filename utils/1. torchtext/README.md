@@ -10,4 +10,4 @@ The notebook introduces what is `Field` object, `DataSet`, `Vocab` object and `I
 
 2. dataloader
 
-The python file contains `DataLoader` for torchtext. This is especially useful for training a model by using TPU of google cloud since dataset need to be fed through `DataLoader`.
+A module contains `DataLoader` object. This is especially useful for training a model by using TPU of google cloud since dataset need to be fed through `DataLoader`.
