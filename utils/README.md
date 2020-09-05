@@ -5,7 +5,21 @@ This repository contains the useful implementations for NLP deep learning archte
 ## List of the implementation
 
 1. torchtext
-- torchtext tutorial: Field, Vocab, Iterator, DataSet
+Jupyternotebook explaining torchtext and the tutorials for:
+- `Field`
+- `Vocab`
+- `Iterator`
+- `DataSet`
 
-2. DataLoader
-- dataloader for text data set
+2. dataset
+Modules for creating dataset.
+
+3. dataloader
+Modules of dataloaders for text data set. The modules are especially useful when you using TPU of GCP.
+
+4. trainer
+Modules for training NLP archtecture via torchtext. The modules are including:
+- Neural Machine Trasnlation
+    - [IWSLT 2016](https://sites.google.com/site/iwsltevaluation2016/)
+- Language Modeling
+    - [WikiText103](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/#published-results-wikitext-103)

@@ -10,6 +10,7 @@ This repository contains implementations of NLP deep learning archtecture. The i
     - global attention
     - local attention
     
-    
 2. Sub-word Model
   - Byte Pair Encoding (BPE)
+
+3. Self-attention (a.k.a. transformer)

@@ -1,11 +1,10 @@
+from typing import Optional
 import torch
 import torch.nn as nn
 
 class Transformer(nn.Module):
     def __init__(self, src_size: int, trg_size: int, seq_len: int, d_model: int, d_ff: int, enc_pad_idx, dec_pad_idx, device,
-                 num_encoders: int=6, enc_num_heads: int=8, 
-                 num_decoders: int=6, dec_num_heads: int=8,
-                 dropout: float=0.1):
+                 num_encoders: int=6, enc_num_heads: int=8, num_decoders: int=6, dec_num_heads: int=8, dropout: float=0.1):
         super(Transformer, self).__init__()
         
         self.src_size = src_size
@@ -259,7 +258,6 @@ class PositionWiseFC(nn.Module):
 
         return x
 
-
 # reference: https://github.com/graykode/nlp-tutorial/blob/master/5-1.Transformer/Transformer(Greedy_decoder)_Torch.ipynb
 def get_attn_pad_mask(seq_q, seq_k, pad_idx):
     batch_size, len_q = seq_q.size()
@@ -280,22 +278,30 @@ def beam_search():
     '''
 
 # reference: https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/master/train.py#L38
-def cal_loss(pred, gold, trg_pad_idx, smoothing=False):
-    ''' Calculate cross entropy loss, apply label smoothing if needed. '''
+def cal_loss(pred, target, ignore_idx, smoothing: Optional[float]=None):
+    ''' 
+    Calculate cross entropy loss, apply label smoothing if needed
+    param:
+        pred: the result of the model
+        target: ground truth for the input
+        ignore_idx: a index for ignoring when calcuate log-softmax
+        smoothing: Optional. smoothing parameter for label smoothing
+    shape:
+        pred: [batch * (seq_len-1), vocab]
+        [Batch_size * (Seq_len-1)]
+    '''
+    target = target.contiguous().view(-1)
 
-    gold = gold.contiguous().view(-1)
-
-    if smoothing:
-        eps = 0.1
+    if smoothing != None:
         n_class = pred.size(1)
 
-        one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
-        one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
+        one_hot = torch.zeros_like(pred).scatter(1, target.view(-1, 1), 1)
+        one_hot = one_hot * (1 - smoothing) + (1 - one_hot) * smoothing / (n_class - 2)
         log_prb = nn.functional.log_softmax(pred, dim=1)
 
-        non_pad_mask = gold.ne(trg_pad_idx)
-        loss = -(one_hot * log_prb).sum(dim=1)
+        non_pad_mask = target.ne(ignore_idx)
+        loss = - (one_hot * log_prb).sum(dim=1)
         loss = loss.masked_select(non_pad_mask).mean()  # average later
     else:
-        loss = nn.functional.cross_entropy(pred, gold, ignore_index=trg_pad_idx, reduction='sum')
+        loss = nn.functional.cross_entropy(pred, target, ignore_index=ignore_idx, reduction='mean')
     return loss

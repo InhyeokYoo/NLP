@@ -43,6 +43,3 @@ The epoch is set to 100 and the seed is not fixed in the experiment. Therefore, 
 | Baseline | 5.174 | 5.773 | 5.936 |
 | x+SubLayer(LayerNorm(x)) | **0.031** | **0.002** | **0.013** |
 | Label smoothing + Warm-up steps | 1.555 | 1.687 | 1.739 |
-
-
-# Usage
