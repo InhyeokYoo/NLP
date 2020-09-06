@@ -1,7 +1,7 @@
 from typing import Optional, Tuple
 import math
 import time
-import matplotlib.pyplot as plt
+from . import utils
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -56,12 +56,6 @@ def evaluate(model: nn.Module, iterator: BucketIterator, criterion: nn.Module,
             epoch_loss += loss.item()
 
     return epoch_loss / len(iterator)
-
-def epoch_time(start_time: int, end_time: int):
-    elapsed_time = end_time - start_time
-    elapsed_mins = int(elapsed_time / 60)
-    elapsed_secs = int(elapsed_time - (elapsed_mins * 60))
-    return elapsed_mins, elapsed_secs
 
 def get_torchtext_dataset(SEQ_LEN: int=40, exts: Tuple[str, str]=('de', 'en')):
     SRC = Field(tokenize='spacy', tokenizer_language=exts[0], init_token='<SOS>', eos_token='<EOS>', lower=True, batch_first=True, fix_length=SEQ_LEN)
@@ -122,14 +116,13 @@ if '__name__' == '__main__':
         train_loss = train(model, train_iterator, optimizer, criterion, CLIP)
         valid_loss = evaluate(model, valid_iterator, criterion)
         end_time = time.time()
-        epoch_mins, epoch_secs = epoch_time(start_time, end_time)
-        print(f'Epoch: {epoch:02} | Time: {epoch_mins}m {epoch_secs}s')
-        print(f'\tTrain Loss: {train_loss:.3f} | Train PPL: {math.exp(train_loss):7.3f}')
-        print(f'\t Val. Loss: {valid_loss:.3f} |  Val. PPL: {math.exp(valid_loss):7.3f}')
+        utils.show_train_info(epoch, start_time=start_time, end_time=end_time,
+                            train_loss=train_loss, valid_loss=valid_loss)
         train_losses.append(train_loss)
         test_losses.append(valid_loss)
 
     test_loss = evaluate(model, test_iterator, criterion)
     print(f'| Test Loss: {test_loss:.3f} | Test PPL: {math.exp(test_loss):7.3f} |')
 
-    plot_losses(train_losses, test_losses) # red for train, blue for test
+    utils.plot_losses(train_losses, test_losses) # red for train, blue for test
+`
