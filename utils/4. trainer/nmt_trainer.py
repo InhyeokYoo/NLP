@@ -1,14 +1,14 @@
-from typing import Optional, Tuple
-import math, time
-from utils import *
+from typing import Optional
+import time
+from . import utils
+from . import get_torchtext_dataset
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchtext.datasets import IWSLT
-from torchtext.data import Field, BucketIterator
+from torchtext.data import BucketIterator
 
 def train(model: nn.Module, iterator: BucketIterator, optimizer: optim.Optimizer, 
-        criterion: nn.Module, clip: float, **kwargs):
+        criterion: nn.Module, clip: Optional[float], **kwargs):
     model.train()
     epoch_loss = 0
 
@@ -24,7 +24,7 @@ def train(model: nn.Module, iterator: BucketIterator, optimizer: optim.Optimizer
         loss.backward()
 
         # Gradient clipping
-        if clip != None:
+        if clip is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
         epoch_loss += loss.item()
@@ -33,10 +33,12 @@ def train(model: nn.Module, iterator: BucketIterator, optimizer: optim.Optimizer
 
 def init_weights(model: nn.Module, initializer=torch.nn.init.xavier_uniform_, **kwargs):
     '''
+    initialize the weights (default is Xavier initialize). 
+    Keyword arguments are for a intializer
     '''
     for p in model.parameters():
         if p.dim() > 1:
-            initializer(p)
+            initializer(p, **kwargs)
 
 def evaluate(model: nn.Module, iterator: BucketIterator, criterion: nn.Module,
             **kwargs):
@@ -57,79 +59,58 @@ def evaluate(model: nn.Module, iterator: BucketIterator, criterion: nn.Module,
 
     return epoch_loss / len(iterator)
 
-def epoch_time(start_time: int, end_time: int):
-    elapsed_time = end_time - start_time
-    elapsed_mins = int(elapsed_time / 60)
-    elapsed_secs = int(elapsed_time - (elapsed_mins * 60))
-    return elapsed_mins, elapsed_secs
+def train(model: nn.Module, criterion: nn.Module=nn.CrossEntropyLoss, optimizer=optim.Adam,
+        seq_len: Optional[int]=None, batch_size: int=128, n_epochs: int=100, 
+        clip: Optional[float]=None, ignore_idx: Optional[int]=None,
+        device = torch.device('cuda' if torch.cuda.is_available() == True else 'cpu')):
+    # TODO: MAX_LEN 가져오기
+    '''
+    trainer for NMT
+    param:
+        seq_len: Sequence length for the model. the default value is max length of the src/trg corpus
+        clip: Optional. If provided, clipping the gradient of the model. (default=None)
+        ignore_idx: ignore when calculate the loss. The default value is padding index.
+    '''
+    SRC, TRG, train_data, valid_data, test_data = get_torchtext_dataset.get_IWSLT(seq_len)
 
-def get_torchtext_dataset(SEQ_LEN: int=40, exts: Tuple[str, str]=('de', 'en')):
-    SRC = Field(tokenize='spacy', tokenizer_language=exts[0], init_token='<SOS>', eos_token='<EOS>', lower=True, batch_first=True, fix_length=SEQ_LEN)
-    TRG = Field(tokenize="spacy", tokenizer_language=exts[1], init_token='<SOS>', eos_token='<EOS>', lower=True, batch_first=True, fix_length=SEQ_LEN)
-
-    # change data if want to use other dataset
-    train_data, valid_data, test_data = IWSLT.splits(exts=['.'+ext for ext in exts], fields=(SRC, TRG))
-
-    SRC.build_vocab(train_data, min_freq=2)
-    TRG.build_vocab(train_data, min_freq=2)
-
-    return (SRC, TRG), (train_data, valid_data, test_data)
-
-if '__name__' == '__main__':
-    # get data_set: IWSLT from torchtext
-    SRC, TRG, train_data, valid_data, test_data = get_torchtext_dataset(SEQ_LEN)
-
-    # FINALS
-    SEQ_LEN = 40
     ENC_PAD_IDX = SRC.vocab.stoi['<pad>']
     DEC_PAD_IDX = TRG.vocab.stoi['<pad>']
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() == True else 'cpu')
-    BATCH_SIZE = 128
-    # Model **kwargs
-    kwargs = {'src_size': len(SRC.vocab), 
-              'trg_size': len(TRG.vocab),
-              'BATCH_SIZE': BATCH_SIZE,
-                'D_MODEL': 512,
-                'D_FF': 2048,
-                'DEVICE': DEVICE,
-                'ENC_PAD_IDX':ENC_PAD_IDX,
-                'DEC_PAD_IDX':DEC_PAD_IDX,
-              }
 
-    # create model
-    model = model(**kwargs).to(DEVICE)
-
+    model.to(device)
     # initialize: Xavier
     init_weights(model)
-    N_EPOCHS = 100
-    CLIP = 1
+    train_iterator, valid_iterator, test_iterator = BucketIterator.splits((train_data, valid_data, test_data), 
+                                                                        batch_size=batch_size, device=device)
     
-    train_iterator, valid_iterator, test_iterator = BucketIterator.splits((train_data, valid_data, test_data), batch_size=BATCH_SIZE, device=DEVICE)
-
-    print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters')
-
-    criterion = nn.CrossEntropyLoss(ignore_index=DEC_PAD_IDX)
-    optimizer = optim.Adam(model.parameters())
+    criterion(ignore_index=DEC_PAD_IDX)
+    optimizer = optimizer(model.parameters())
 
     train_losses = []
     test_losses = []
 
-    for epoch in range(1, N_EPOCHS+1):
+    for epoch in range(1, n_epochs+1):
         # lr = D_MODEL**(-1/2) * min(epoch **(-0.5), epoch * WARMUP_STEMPS ** (-1.5))
         # optimizer = optim.Adam(model.parameters(), lr=lr, betas=[0.9, 0.98], eps=1e-09)
         
         start_time = time.time()
-        train_loss = train(model, train_iterator, optimizer, criterion, CLIP)
+        train_loss = train(model, train_iterator, optimizer, criterion, clip)
         valid_loss = evaluate(model, valid_iterator, criterion)
         end_time = time.time()
-        epoch_mins, epoch_secs = epoch_time(start_time, end_time)
-        print(f'Epoch: {epoch:02} | Time: {epoch_mins}m {epoch_secs}s')
-        print(f'\tTrain Loss: {train_loss:.3f} | Train PPL: {math.exp(train_loss):7.3f}')
-        print(f'\t Val. Loss: {valid_loss:.3f} |  Val. PPL: {math.exp(valid_loss):7.3f}')
+        utils.show_train_info(epoch, start_time, end_time, train_loss, valid_loss)
         train_losses.append(train_loss)
         test_losses.append(valid_loss)
 
     test_loss = evaluate(model, test_iterator, criterion)
-    print(f'| Test Loss: {test_loss:.3f} | Test PPL: {math.exp(test_loss):7.3f} |')
+    utils.show_evaluate_loss(test_loss)
+    utils.plot_losses(train_losses, test_losses) # red for train, blue for test
 
-    plot_losses(train_losses, test_losses) # red for train, blue for test
+if '__name__' == '__main__':
+    # create model
+    model = model()
+    print(f'The model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters')
+
+    # fill the parameters!
+    train(model)
+
+
+    
