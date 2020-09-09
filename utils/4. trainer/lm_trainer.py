@@ -60,10 +60,9 @@ def evaluate(model: nn.Module, iterator: BucketIterator, criterion: nn.Module,
     return epoch_loss / len(iterator)
 
 def train(model: nn.Module, criterion: nn.Module=nn.CrossEntropyLoss, optimizer=optim.Adam,
-        seq_len: Optional[int]=None, batch_size: int=128, n_epochs: int=100, 
+        seq_len: int=None, batch_size: int=128, n_epochs: int=100, 
         clip: Optional[float]=None, ignore_idx: Optional[int]=None,
         device = torch.device('cuda' if torch.cuda.is_available() == True else 'cpu')):
-    # TODO: MAX_LEN 가져오기
     '''
     trainer for NMT
     param:
@@ -71,10 +70,9 @@ def train(model: nn.Module, criterion: nn.Module=nn.CrossEntropyLoss, optimizer=
         clip: Optional. If provided, clipping the gradient of the model. (default=None)
         ignore_idx: ignore when calculate the loss. The default value is padding index.
     '''
-    SRC, TRG, train_data, valid_data, test_data = get_torchtext_dataset.get_IWSLT(seq_len)
+    field, train_data, valid_data, test_data = get_torchtext_dataset.get_IWSLT(seq_len)
 
-    ENC_PAD_IDX = SRC.vocab.stoi['<pad>']
-    DEC_PAD_IDX = TRG.vocab.stoi['<pad>']
+    PAD_IDX = field.vocab.stoi['<pad>']
 
     model.to(device)
     # initialize: Xavier
