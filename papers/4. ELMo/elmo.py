@@ -16,6 +16,12 @@ class CharCNN(nn.Module):
         super(CharCNN, self).__init__()
         self.embedding = nn.Embedding(vocab_size, emb_dim)
 
-    def forward(self):
+    def forward(self, x):
+        '''
+        param:
+            x: characters
+        dim:
+            x: [batch, 
+        '''
         pass
 
