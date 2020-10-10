@@ -25,3 +25,18 @@ def get_WikiText103(seq_len: int=None, tokenizer_language: str='en'):
     field.build_vocab(train_data, min_freq=2)
 
     return field, (train_data, valid_data, test_data)
+
+def get_WikiText2(seq_len: int=None, tokenizer_language: str='en'):
+    from torchtext.datasets import WikiText2
+    field = Field(tokenize='spacy', tokenizer_language=tokenizer_language, 
+                init_token='<SOS>', eos_token='<EOS>', 
+                lower=True, batch_first=True, fix_length=seq_len)
+
+    train_data, valid_data, test_data = WikiText2.splits(text_field=field)
+
+    field.build_vocab(train_data, min_freq=2)
+
+    return field, (train_data, valid_data, test_data)
+    
+if __name__ == "__main__":
+    get_WikiText103(40)

@@ -1,87 +1,98 @@
-from typing import Optional, List
+from typing import List, Tuple
 import torch
 import torch.nn as nn
+from char_cnn import CharEmbedding
 
 class ELMo(nn.Module):
-    def __init__(self, vocab_size, emb_dim: int, hid_dim: int, kernel_sizes: List[int], seq_len: int,
-                 n_layers: int, dropout: Optional[float]):
+    def __init__(self, vocab_size, output_dim: int, emb_dim: int, hid_dim: int, prj_dim, kernel_sizes: List[Tuple[int]], 
+                seq_len: int, n_layers: int=2, dropout: float=0.):
+        r"""
+        Parametrs:
+            vocab_size: Character vocabulary size
+            output_dim: Word vocabulary size
+            emb_dim: Embedding dimension of chracter tokens
+            hid_dim: hidden dimension for bi-directional language model
+            kernel_sizes: `list`. Kernel_sizes for the convolution operations.
+            seq_len: character sequence len
+            n_layers: the number of layers of LSTM. default 2
+            dropout: dropout of LSTM
+        """
         super(ELMo, self).__init__()
 
-        kernel_dim = sum([kernel_size * 25 for kernel_size in kernel_sizes])
+        self.embedding = CharEmbedding(vocab_size, emb_dim, prj_dim, kernel_sizes, seq_len)
+        self.bilms = BidirectionalLanguageModel(hid_dim, hid_dim, n_layers, dropout)
 
-        self.embedding = CharCNN(vocab_size, emb_dim, kernel_sizes, seq_len)
-        self.bilms = [nn.LSTM(emb_dim, hid_dim, bidirectional=True, dropout=dropout) for _ in range(n_layers)]
+        self.predict = nn.Linear(hid_dim, output_dim)
+        self.softmax = nn.LogSoftmax(dim=2)
 
-    def forward(self, x):
-        '''
-        param:
-
-        dim:
+    def forward(self, x: torch.Tensor):
+        r"""
+        Parameters:
+            x: Sentence
+        Dimensions:
             x: [batch, seq_len]
-        '''
-        pass
+        """
+        emb = self.embedding(x) # [Batch, Seq_len, Projection_layer (==Emb_dim==HId_dim)]
+        _, last_output = self.bilms(emb) # [Batch, Seq_len, Hidden_size]
+        predict = self.predict(last_output) # [Batch, Seq_len, VOCAB_SIZE]
+        y = self.softmax(predict)
 
-class CharCNN(nn.Module):
-    def __init__(self, vocab_size: int, emb_dim: int, kernel_sizes: List[int], seq_len: int):
-        super(CharCNN, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, emb_dim)
-        self.seq_len = seq_len
-        self.kernel_sizes = kernel_sizes
-        self.kernel_dim = sum([kernel_size * 25 for kernel_size in kernel_sizes]) # for the small model of the paper
-        self.kernels = [nn.Conv1d(in_channels=emb_dim, out_channels=25*kernel_size, kernel_size=kernel_size)
-                       for kernel_size in kernel_sizes] # [B, emb_dim, seq_len] -> # [B, 1, seq_len - kernel_size + 1]
-        self.highway_net = HighwayNetwork(self.kernel_dim)
-        
-        # TODO: Vocab 만들기: SOW, EOW, PAD index 포함
-        self.vocab = dict()
+        return y # only use the output of the last LSTM of the biLM on training step
 
-    def forward(self, word: torch.Tensor):
-        '''
-        The only important difference is that we use a larger number ofconvolutional features of 4096 to give enough capacity tothe model.
-        param:
-            word: a word
-        dim:
-            [B, emb_dim, seq_len]
-        '''
-        batch_size = word.size(0)
-        y = torch.zeros(batch_size, self.kernel_dim)
- 
-        cnt = 0
+    def get_embed_layers(self, x: torch.Tensor) -> List:
+        r"""
+        Same as the forward, but return embedding all of layers
 
-        for kernel in self.kernels:
-            temp = kernel(word)
-            pooled = torch.max(temp, dim=2)[0]
-            y[:, cnt:cnt+pooled.size(1)] = pooled
-            cnt += pooled.size(1)
-        '''
-        # cat vs. fill empty tensor
-        y = []
-        for kernel in kernels:
-            temp = kernel(a)
-            y.append(torch.max(temp, dim=2)[0]) # max pooling
-        y = torch.cat(y, dim=1)
-        '''
+        Parameters:
+            x: Sentence. The sentence is composed by characeters. 
+        Dimensions:
+            x: [batch, seq_len]
+        """
+        emb = self.embedding(x) # [Batch, Seq_len, Projection_layer (==Emb_dim==HId_dim)]
+        fisrt_output, last_output = self.bilms(emb) # [Batch, Seq_len, Hidden_size]
 
-        return self.highway_net(y)
-    
-    def char_pad(self):
-        pass
+        return emb, (fisrt_output, last_output)
 
-class HighwayNetwork(nn.Module):
-    def __init__(self, kernel_sizes: int):
-        super(HighwayNetwork, self).__init__()
-        self.linear = nn.Linear(kernel_sizes, kernel_sizes)
-        self.t_gate = nn.Sequential(nn.Linear(kernel_sizes, kernel_sizes), nn.Sigmoid())
+    def init_weights(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
-    def forward(self, y):
-        t = self.t_gate(y)
-        c = 1 - t
-        return t * torch.relu(self.linear(y)) + c * y
+        # > LSTM forget gate were iniailized to 1.0 (Jozefowicz et al. 2016)
+        for lstm in self.bilms.lstms:
+            for names in lstm._all_weights:
+                for name in filter(lambda n: "bias" in n, names):
+                    bias = getattr(lstm, name)
+                    n = bias.size(0)
+                    start, end = n//4, n//2
+                    bias.data[start:end].fill_(1.)
 
-    def _init_bias(self):
-        '''
-        Srivastava et al. (2015) recommend initializing b_T to a negative vlaue, 
-        in order to militate the initial behavior towars carry. We initialized b_T to a
-        small interval around -2.
-        '''
-        self.t_gate[0].bias.data.fill_(-2)
+class BidirectionalLanguageModel(nn.Module):
+    def __init__(self, emb_dim: int, hid_dim: int, prj_emb: int, dropout: float=0.) -> None:
+        r"""
+        > We use dropout before and after evert LSTM layer
+        """
+        super(BidirectionalLanguageModel, self).__init__()
+        self.lstms = nn.ModuleList([nn.LSTM(emb_dim, hid_dim, bidirectional=True, dropout=dropout, batch_first=True), 
+                      nn.LSTM(prj_emb, hid_dim, bidirectional=True, dropout=dropout, batch_first=True)])
+        self.projection_layer = nn.Linear(2*hid_dim, prj_emb)
+
+    def forward(self, x: torch.Tensor, hidden: Tuple[torch.Tensor]=None):
+        r"""
+        Parameters:
+            x: A sentence tensor that embeded
+            hidden: tuple of hidden and cell. The initial hidden and cell state of the LSTM
+        Dimensions:
+            x: [Batch, Seq_len, Emb_size]
+            hidden: [num_layers * num_directions, batch, hidden_size], [num_layers * num_directions, batch, hidden_size]
+        """
+        # > "...add a residual connection between LSTM layers"
+        first_output, (hidden, cell) = self.lstms[0](x, hidden) # [Batch, Seq_len, # directions * Hidden_size]
+        # TODO: [Batch, Seq_len, # directions * Hidden_size]를 그냥 넣는지, 
+        #       [Batch, Seq_len, # directions, Hidden_size]로 바꾼 후(nn.projection) 더해서 넣는지 확인이 필요
+        projected = self.projection_layer(first_output) # [Batch, Seq_len, Projection_size]
+        second_output, (hidden, cell) = self.lstms[1](projected, (hidden, cell)) # [Batch, Seq_len, # directions * Hidden_size]
+
+        second_output = second_output.view(second_output.size(0), second_output.size(1), 2, -1) # [Batch, Seq_len, # directions, Hidden_size]
+        second_output = second_output[:, :, 0, :] + second_output[:, :, 1, :] # [Batch, Seq_len, Hidden_size]
+        return first_output, second_output   # [Batch, Seq_len, Hidden_size]

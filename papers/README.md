@@ -13,4 +13,6 @@ This repository contains implementations of NLP deep learning archtecture. The i
 2. Sub-word Model
   - Byte Pair Encoding (BPE)
 
-3. Self-attention (a.k.a. transformer)
+3. Self-attention (a.k.a. transformer) - Sep. 09 2020
+
+4. ELMo - Oct. 09 2020
