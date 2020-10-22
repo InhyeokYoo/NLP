@@ -1,37 +1,5 @@
-from typing import Optional
 import torch
 import torch.nn as nn
-
-class Transformer(nn.Module):
-    def __init__(self, src_size: int, trg_size: int, seq_len: int, d_model: int, d_ff: int, enc_pad_idx, dec_pad_idx, device,
-                 num_encoders: int=6, enc_num_heads: int=8, num_decoders: int=6, dec_num_heads: int=8, dropout: float=0.1):
-        super(Transformer, self).__init__()
-        
-        self.src_size = src_size
-        self.trg_size = trg_size
-        self.d_model = d_model
-        self.d_ff = d_ff
-        self.seq_len = seq_len
-        self.enc_pad_idx = enc_pad_idx
-        self.dec_pad_idx = dec_pad_idx
-        self.device = device
-
-        self.encoder = Encoders(self.src_size, self.seq_len, self.d_model, self.d_ff, num_encoders, enc_num_heads, dropout=dropout)
-        self.decoder = Decoders(self.trg_size, self.seq_len, self.d_model, self.d_ff, num_decoders, dec_num_heads, dropout=dropout)
-        
-        self.projection = nn.Linear(d_model, self.trg_size)
-
-    def forward(self, sources, targets):
-        # masking
-        dec_pad_mask = get_attn_pad_mask(targets, targets, self.dec_pad_idx).to(self.device) # [B, S, S]
-        enc_pad_mask = get_attn_pad_mask(sources, sources, self.enc_pad_idx).to(self.device) # [B, S, S]
-
-        enc_attn_score = self.encoder(sources, enc_pad_mask) # [B, S, d_model]
-
-        enc_dec_mask = get_attn_subsequent_mask(enc_attn_score).to(self.device)
-        dec_outputs = self.decoder(enc_attn_score, targets, enc_pad_mask, dec_pad_mask, enc_dec_mask) # [B, S, d_model]
-        logit = self.projection(dec_outputs) # [B, S, trg_vocab]
-        return logit
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, seq_len: int, dropout: int=0.1):
@@ -55,49 +23,6 @@ class PositionalEncoding(nn.Module):
     def forward(self, emb):
         return self.dropout(emb + self.pe) # [B, S, D_model]
 
-class Encoders(nn.Module):
-    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, num_encoder: int, num_heads: int, dropout: float):
-        super(Encoders, self).__init__()
-        self.d_model = d_model
-        self.voc_size = voc_size
-
-        self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
-        self.pos_enc = PositionalEncoding(d_model, seq_len, dropout)
-        self.models = nn.ModuleList([Encoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_encoder)])
-        
-    def forward(self, x, enc_mask):
-        # input: [B, S]
-        x_emb = self.emb(x) * torch.sqrt(torch.tensor(self.d_model).float()) # -> [B, S, D_model]
-        x_emb = self.pos_enc(x_emb) # [B, S, d_model]
-    
-        for model in self.models:
-            x_emb = model(x_emb, enc_mask)
-
-        return x_emb
-
-class Encoder(nn.Module):
-    def __init__(self, d_model: int, d_ff:int, seq_len: int, num_enc_heads: int, dropout: float):
-        super(Encoder, self).__init__()
-
-        self.attn = MultiHeadAttn(d_model, num_enc_heads)
-        self.layer_norm1 = nn.LayerNorm(d_model)
-        self.dropout1 = nn.Dropout(dropout)
-        self.fc = PositionWiseFC(d_model, d_ff)
-        self.layer_norm2 = nn.LayerNorm(d_model)
-        self.dropout2 = nn.Dropout(dropout)
-        
-    def forward(self, x, pad_mask):
-        # x+SubLayer(LayerNorm(x))
-        layer_norm_x = self.layer_norm1(x)
-        attn_score = self.attn(layer_norm_x, layer_norm_x, layer_norm_x, pad_mask) + x
-        attn_score = self.dropout1(attn_score)
-
-        # x+SubLayer(LayerNorm(x))
-        attn_score = self.fc(self.layer_norm2(attn_score)) + attn_score
-        attn_score = self.dropout2(attn_score)
-
-        return attn_score # [B, S, D_model]
-
 class Decoders(nn.Module):
     def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, num_decoder: int, num_heads: int, dropout: float):
         super(Decoders, self).__init__()
@@ -108,57 +33,45 @@ class Decoders(nn.Module):
         self.pos_enc = PositionalEncoding(d_model, seq_len, dropout)
         self.models = nn.ModuleList([Decoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_decoder)])
 
-    def forward(self, enc_attn_score, y, enc_pad_mask, dec_pad_mask, enc_dec_mask):
+    def forward(self, input, dec_pad_mask):
         # [B, S]
-        y_emb = self.emb(y) * torch.sqrt(torch.tensor(self.d_model).float()) # [B, S, D_model]
-        y_emb = self.pos_enc(y_emb)
-
-        # mask
-        dec_mask = dec_pad_mask + enc_dec_mask # masking if larger than 1
+        emb_mtrx = self.emb(input) * torch.sqrt(torch.tensor(self.d_model).float()) # [B, S, D_model]
+        emb_mtrx = self.pos_enc(emb_mtrx)
         
         for model in self.models:
-            y_emb = model(enc_attn_score, y_emb, dec_mask, enc_pad_mask)
+            # TODO: fill the params
+            emb_mtrx = model()
 
-        return y_emb
+        return emb_mtrx
 
 class Decoder(nn.Module):
-    def __init__(self, d_model: int, d_ff:int, seq_len: int, num_heads: int, dropout: float):
+    def __init__(self, d_model: int, d_ff:int, num_heads: int, dropout: float):
         super(Decoder, self).__init__()
 
         self.self_attn = MultiHeadAttn(d_model, num_heads)
         self.layer_norm1 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
-        self.enc_dec_attn = MultiHeadAttn(d_model, num_heads)
+        self.fc = PositionWiseFC(d_model, d_ff)
         self.layer_norm2 = nn.LayerNorm(d_model)
         self.dropout2 = nn.Dropout(dropout)
-        self.fc = PositionWiseFC(d_model, d_ff)
-        self.layer_norm3 = nn.LayerNorm(d_model)
-        self.dropout3 = nn.Dropout(dropout)
 
-    def forward(self, enc_attn_score, y, dec_mask, enc_mask):
+    def forward(self, input, mask):
         '''
         param:
-            enc_attn_score: attnetion scores. The output of the encoder
-            y: [Batch, Seq_len, D_embedding]. Embedded words.
-            dec_mask: [Batch, Seq len(q), Seq_len(k)]. masking if > 1. It includes both padding mask and subsequence mask of decoders.
-            enc_mask: [Batch, Seq len(q), Seq_len(k)]. masking if > 1. The mask for padding of the encoder
+            input: input tensor
+            mask: Subsequence mask of decoders. masking if > 1
+        dim:
+            input: [Batch, Seq_len, D_embedding]. Embedded words.
+            dec_mask: [Batch, Seq len(q), Seq_len(k)]
         '''
         # decoder self attention: x+SubLayer(LayerNorm(x))
-        layer_norm_y = self.layer_norm1(y)
-        self_attn_score = y + self.self_attn(layer_norm_y, layer_norm_y, layer_norm_y, dec_mask)
+        layer_norm_input = self.layer_norm1(input)
+        self_attn_score = input + self.self_attn(layer_norm_input, layer_norm_input, layer_norm_input, mask)
         self_attn_score = self.dropout1(self_attn_score)
 
-        # enc_dec self attention: x+SubLayer(LayerNorm(x))
-        attn_score = self.enc_dec_attn(
-                        self.layer_norm2(enc_attn_score), 
-                        self.layer_norm2(enc_attn_score), 
-                        self.layer_norm2(self_attn_score), 
-                        enc_mask) + self_attn_score
-        attn_score = self.dropout2(attn_score)
-
         # Position-wise feed forward network: x+SubLayer(LayerNorm(x))
-        attn_score = self.fc(self.layer_norm3(attn_score)) + attn_score
-        attn_score = self.dropout3(attn_score)
+        attn_score = self.fc(self.layer_norm2(self_attn_score)) + self_attn_score
+        attn_score = self.dropout2(attn_score)
         
         return attn_score
 
@@ -270,32 +183,3 @@ def get_attn_subsequent_mask(seq):
     subsequent_mask = torch.zeros(attn_shape)
     subsequent_mask.triu_(1) # [B, S, S]
     return subsequent_mask
-
-# reference: https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/master/train.py#L38
-def cal_loss(pred, target, ignore_idx, smoothing: Optional[float]=None):
-    ''' 
-    Calculate cross entropy loss, apply label smoothing if needed
-    param:
-        pred: the result of the model
-        target: ground truth for the input
-        ignore_idx: a index for ignoring when calcuate log-softmax
-        smoothing: Optional. smoothing parameter for label smoothing
-    shape:
-        pred: [batch * (seq_len-1), vocab]
-        [Batch_size * (Seq_len-1)]
-    '''
-    target = target.contiguous().view(-1)
-
-    if smoothing != None:
-        n_class = pred.size(1)
-
-        one_hot = torch.zeros_like(pred).scatter(1, target.view(-1, 1), 1)
-        one_hot = one_hot * (1 - smoothing) + (1 - one_hot) * smoothing / (n_class - 2)
-        log_prb = nn.functional.log_softmax(pred, dim=1)
-
-        non_pad_mask = target.ne(ignore_idx)
-        loss = - (one_hot * log_prb).sum(dim=1)
-        loss = loss.masked_select(non_pad_mask).mean()  # average later
-    else:
-        loss = nn.functional.cross_entropy(pred, target, ignore_index=ignore_idx, reduction='mean')
-    return loss
