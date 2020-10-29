@@ -1,7 +1,6 @@
 # Readme.md
 
 An implementation of [Deep contextualized word representations](https://arxiv.org/abs/1802.05365) of Peters et al. (2018).
-
 The module includes character embedding of [Kim et al. (2015)](https://arxiv.org/pdf/1508.06615.pdf).
 
 # Usage

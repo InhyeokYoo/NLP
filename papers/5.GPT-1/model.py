@@ -1,8 +1,37 @@
 import torch
 import torch.nn as nn
 
+class Decoders(nn.Module):
+    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, num_decoder: int, num_heads: int, dropout: float) -> None:
+        super(Decoders, self).__init__()
+        self.d_model = d_model
+        self.voc_size = voc_size
+
+        self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
+        self.pos_enc = PositionalEncoding(d_model, seq_len, dropout)
+        self.models = nn.ModuleList([Decoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_decoder)])
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        '''
+        param:
+            input: sequence of words
+        dim:
+            input:
+                input: [B, S]
+            output:
+                result: [B, S, D_model]
+        '''
+        input = self.emb(input) * torch.sqrt(torch.tensor(self.d_model).float()) # [B, S, D_model]
+        input = self.pos_enc(input)
+        pad_mask = get_attn_subsequent_mask(input)
+
+        for model in self.models:
+            input = model(input, pad_mask)
+
+        return input
+
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, seq_len: int, dropout: int=0.1):
+    def __init__(self, d_model: int, seq_len: int, dropout: int=0.1) -> None:
         super(PositionalEncoding, self).__init__()
 
         self.dropout = nn.Dropout(dropout)
@@ -20,32 +49,20 @@ class PositionalEncoding(nn.Module):
 
         self.register_buffer('pe', pe) # the intance has the attribute `pe`
         
-    def forward(self, emb):
+    def forward(self, emb: torch.Tensor) -> torch.Tensor:
+        '''
+        param:
+            input: sequence of words embeddings
+        dim:
+            input:
+                input: [B, S,  D_model]
+            output:
+                result: [B, S, D_model]
+        '''
         return self.dropout(emb + self.pe) # [B, S, D_model]
 
-class Decoders(nn.Module):
-    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, num_decoder: int, num_heads: int, dropout: float):
-        super(Decoders, self).__init__()
-        self.d_model = d_model
-        self.voc_size = voc_size
-
-        self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
-        self.pos_enc = PositionalEncoding(d_model, seq_len, dropout)
-        self.models = nn.ModuleList([Decoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_decoder)])
-
-    def forward(self, input, dec_pad_mask):
-        # [B, S]
-        emb_mtrx = self.emb(input) * torch.sqrt(torch.tensor(self.d_model).float()) # [B, S, D_model]
-        emb_mtrx = self.pos_enc(emb_mtrx)
-        
-        for model in self.models:
-            # TODO: fill the params
-            emb_mtrx = model()
-
-        return emb_mtrx
-
 class Decoder(nn.Module):
-    def __init__(self, d_model: int, d_ff:int, num_heads: int, dropout: float):
+    def __init__(self, d_model: int, d_ff:int, num_heads: int, dropout: float) -> None:
         super(Decoder, self).__init__()
 
         self.self_attn = MultiHeadAttn(d_model, num_heads)
@@ -55,14 +72,15 @@ class Decoder(nn.Module):
         self.layer_norm2 = nn.LayerNorm(d_model)
         self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, input, mask):
+    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> None:
         '''
         param:
-            input: input tensor
+            input: input tensor. Embedded words
             mask: Subsequence mask of decoders. masking if > 1
         dim:
-            input: [Batch, Seq_len, D_embedding]. Embedded words.
-            dec_mask: [Batch, Seq len(q), Seq_len(k)]
+            input: [Batch, Seq_len, D_embedding]
+            mask: [Batch, Seq len(q), Seq_len(k)]
+            attn_score: [Batch, Seq len(q), Seq_len(k)]
         '''
         # decoder self attention: x+SubLayer(LayerNorm(x))
         layer_norm_input = self.layer_norm1(input)
@@ -80,8 +98,8 @@ class MultiHeadAttn(nn.Module):
         super(MultiHeadAttn, self).__init__()
 
         self.attn_type = attn_type.lower()
+
         assert attn_type in ['dot', 'additive'], 'attn_type not supported: attn_type. Please select one of [dot, addictive]'
-        
         assert d_model % num_heads == 0, 'the num_heads doesn\'t match'
 
         self.num_heads = num_heads
@@ -111,7 +129,6 @@ class MultiHeadAttn(nn.Module):
     def scaled_dot_product_attn(self, k, v, q, mask):
         # k, q, v: [B, S, D_model]
         # mask: [B, S, D_model]
-        # FIXME: Attention에서도 사용할 수 있게 re-use 가능한가? -> 
         batch_size, seq_len, _ = k.size()
         q = self.W_q(q).reshape(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2) # [B, h, S, d_k]
         k = self.W_k(k).reshape(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2) # [B, h, S, d_k]
@@ -158,7 +175,7 @@ class PositionWiseFC(nn.Module):
         super(PositionWiseFC, self).__init__()
 
         self.fc1 = nn.Linear(d_model, d_ff)
-        self.relu = nn.ReLU()
+        self.relu = nn.GELU()
         self.fc2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
     
@@ -170,6 +187,34 @@ class PositionWiseFC(nn.Module):
         x = self.dropout(x)
 
         return x
+
+class ClassificationHead(nn.Module):
+    def __init__(self, model: torch.Module) -> None:
+        pass
+
+    def forward(self) -> None:
+        pass
+
+class EntailmentHead(nn.Module):
+    def __init__(self) -> None:
+        pass
+
+    def forward(self) -> None:
+        pass
+
+class SimilarityHead(nn.Module):
+    def __init__(self) -> None:
+        pass
+
+    def forward(self) -> None:
+        pass
+
+class MultipleChoiceHead(nn.Module):
+    def __init__(self) -> None:
+        pass
+
+    def forward(self) -> None:
+        pass
 
 # reference: https://github.com/graykode/nlp-tutorial/blob/master/5-1.Transformer/Transformer(Greedy_decoder)_Torch.ipynb
 def get_attn_pad_mask(seq_q, seq_k, pad_idx):
