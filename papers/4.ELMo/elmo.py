@@ -23,7 +23,6 @@ class ELMo(nn.Module):
         self.bilms = BidirectionalLanguageModel(hid_dim, hid_dim, n_layers, dropout)
 
         self.predict = nn.Linear(hid_dim, output_dim)
-        self.softmax = nn.LogSoftmax(dim=2)
 
     def forward(self, x: torch.Tensor):
         r"""
@@ -34,8 +33,7 @@ class ELMo(nn.Module):
         """
         emb = self.embedding(x) # [Batch, Seq_len, Projection_layer (==Emb_dim==HId_dim)]
         _, last_output = self.bilms(emb) # [Batch, Seq_len, Hidden_size]
-        predict = self.predict(last_output) # [Batch, Seq_len, VOCAB_SIZE]
-        y = self.softmax(predict)
+        y = self.predict(last_output) # [Batch, Seq_len, VOCAB_SIZE]
 
         return y # only use the output of the last LSTM of the biLM on training step
 
