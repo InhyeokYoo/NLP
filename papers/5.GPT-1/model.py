@@ -1,15 +1,46 @@
 import torch
 import torch.nn as nn
 
+class LanguageModeling(nn.Module):
+    # Unsupervised pre-training
+    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, 
+                num_decoder: int, num_heads: int, dropout: float) -> None:
+        super(LanguageModeling, self).__init__
+        self.decoders = Decoders(voc_size, seq_len, d_model, d_ff, num_decoder, num_heads, dropout)
+        self.linear = nn.Linear(d_model, voc_size)
+        self.softmax = nn.softmax(dim=-1)
+        
+    def forward(self, input: torch.Tensor):
+        '''
+        param:
+            input: sequence of words
+        dim:
+            input:
+                input: [B, S]
+            output:
+                result: [B, S, D_model]
+        '''
+        emb = self.decoders(input) # [B, S, D_model]
+        output = self.linear(emb) # [B, S, voc_size]
+
+        return output # [B, S, voc_size]
+
 class Decoders(nn.Module):
-    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, num_decoder: int, num_heads: int, dropout: float) -> None:
+    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, 
+                num_decoder: int, num_heads: int, emb_dropout: float, dec_dropout: float) -> None:
         super(Decoders, self).__init__()
         self.d_model = d_model
         self.voc_size = voc_size
 
         self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
-        self.pos_enc = PositionalEncoding(d_model, seq_len, dropout)
-        self.models = nn.ModuleList([Decoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_decoder)])
+        self.dropout = nn.Dropout(emb_dropout)
+        # positional embedding is trainable
+        self.pos_emb = nn.Embedding(num_embeddings=seq_len+1, embedding_dim=d_model)
+        self.pos_dropout = nn.Dropout(emb_dropout)
+        self.models = nn.ModuleList([Decoder(d_model, d_ff, seq_len, num_heads, dropout=dec_dropout) for i in range(num_decoder)])
+
+        nn.init.normal_(self.linear.weight, std = 0.02)
+        nn.init.normal_(self.linear.bias, 0)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         '''
@@ -21,45 +52,17 @@ class Decoders(nn.Module):
             output:
                 result: [B, S, D_model]
         '''
-        input = self.emb(input) * torch.sqrt(torch.tensor(self.d_model).float()) # [B, S, D_model]
-        input = self.pos_enc(input)
-        pad_mask = get_attn_subsequent_mask(input)
+        batch_size, seq_len = input.size()
+        emb = self.dropout(self.emb(input)) # [B, S, D_model]
+        # TODO: +1은 왜 해주지?
+        position = torch.arange(seq_len, device=input.device, dtype=input.dtype).repeat(batch_size, 1) + 1 
+        emb += self.pos_dropout(self.pos_emb(position))
+        pad_mask = get_attn_subsequent_mask(emb)
 
         for model in self.models:
             input = model(input, pad_mask)
 
         return input
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, seq_len: int, dropout: int=0.1) -> None:
-        super(PositionalEncoding, self).__init__()
-
-        self.dropout = nn.Dropout(dropout)
-        pe = torch.zeros([seq_len, d_model]) # [S, D_model]
-        pos = torch.arange(0, seq_len).unsqueeze(1).float() # [S, 1]
-
-        # broadcasting
-        pe += pos # [S, d_model]
-        idx = torch.arange(0, d_model, 2).float() # [S/2]
-        idx = (1/10000.0) ** (2*idx)/d_model # [S/2]
-
-        # broadcasting
-        pe[:, 0::2] = torch.sin(pe[:, 0::2]*idx) # [S/2, D_model]
-        pe[:, 1::2] = torch.cos(pe[:, 1::2]*idx) # [S/2, D_model]
-
-        self.register_buffer('pe', pe) # the intance has the attribute `pe`
-        
-    def forward(self, emb: torch.Tensor) -> torch.Tensor:
-        '''
-        param:
-            input: sequence of words embeddings
-        dim:
-            input:
-                input: [B, S,  D_model]
-            output:
-                result: [B, S, D_model]
-        '''
-        return self.dropout(emb + self.pe) # [B, S, D_model]
 
 class Decoder(nn.Module):
     def __init__(self, d_model: int, d_ff:int, num_heads: int, dropout: float) -> None:
@@ -171,49 +174,49 @@ class MultiHeadAttn(nn.Module):
         return qk
 
 class PositionWiseFC(nn.Module):
-    def __init__(self, d_model: int, d_ff: int, dropout: float=0.1):
+    def __init__(self, d_model: int, d_ff: int, active: nn.Module=nn.GELU, dropout: float=0.1):
         super(PositionWiseFC, self).__init__()
 
         self.fc1 = nn.Linear(d_model, d_ff)
-        self.relu = nn.GELU()
+        self.active = active()
         self.fc2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
     
-    def forward(self, x):
+    def forward(self, input):
         # [B, S, D]
-        x = self.fc1(x) # [B, S, D_ff]
-        x = self.relu(x) # [B, S, D_ff]
-        x = self.fc2(x) # [B, S, D]
-        x = self.dropout(x)
+        output = self.active(self.fc1(input)) # [B, S, D_ff]
+        output = self.dropout(self.fc2(output)) # [B, S, D]
 
-        return x
+        return output
 
+# Supervised fine-tuning
 class ClassificationHead(nn.Module):
-    def __init__(self, model: torch.Module) -> None:
-        pass
+    def __init__(self, model: nn.Module, ) -> None:
+        self.model = model
+        self.linear = nn.Linear()
 
-    def forward(self) -> None:
+    def forward(self, input) -> torch.Tensor:
         pass
 
 class EntailmentHead(nn.Module):
     def __init__(self) -> None:
         pass
 
-    def forward(self) -> None:
+    def forward(self) -> torch.Tensor:
         pass
 
 class SimilarityHead(nn.Module):
     def __init__(self) -> None:
         pass
 
-    def forward(self) -> None:
+    def forward(self) -> torch.Tensor:
         pass
 
 class MultipleChoiceHead(nn.Module):
     def __init__(self) -> None:
         pass
 
-    def forward(self) -> None:
+    def forward(self) -> torch.Tensor:
         pass
 
 # reference: https://github.com/graykode/nlp-tutorial/blob/master/5-1.Transformer/Transformer(Greedy_decoder)_Torch.ipynb
@@ -228,3 +231,5 @@ def get_attn_subsequent_mask(seq):
     subsequent_mask = torch.zeros(attn_shape)
     subsequent_mask.triu_(1) # [B, S, S]
     return subsequent_mask
+
+print(True)
