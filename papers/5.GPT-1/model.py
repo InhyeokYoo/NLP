@@ -3,14 +3,15 @@ import torch.nn as nn
 
 class LanguageModeling(nn.Module):
     # Unsupervised pre-training
-    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, 
+    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, pad_idx: int,
                 num_decoder: int, num_heads: int, dropout: float) -> None:
-        super(LanguageModeling, self).__init__
-        self.decoders = Decoders(voc_size, seq_len, d_model, d_ff, num_decoder, num_heads, dropout)
-        self.linear = nn.Linear(d_model, voc_size)
-        self.softmax = nn.softmax(dim=-1)
+        super(LanguageModeling, self).__init__()
+        self.pad_idx = pad_idx
+
+        self.decoders = Decoders(voc_size, seq_len, d_model, d_ff, pad_idx, num_decoder, num_heads, dropout)
+
         
-    def forward(self, input: torch.Tensor):
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         '''
         param:
             input: sequence of words
@@ -20,17 +21,19 @@ class LanguageModeling(nn.Module):
             output:
                 result: [B, S, D_model]
         '''
-        emb = self.decoders(input) # [B, S, D_model]
-        output = self.linear(emb) # [B, S, voc_size]
+        pad_mask = get_attn_pad_mask(input, input, self.pad_idx)
+        attn = self.decoders(input, pad_mask) # [B, S, D_model]
+        output = self.linear(attn) # [B, S, voc_size]
 
         return output # [B, S, voc_size]
 
 class Decoders(nn.Module):
-    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, 
+    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff: int, pad_idx: int,  
                 num_decoder: int, num_heads: int, emb_dropout: float, dec_dropout: float) -> None:
         super(Decoders, self).__init__()
         self.d_model = d_model
         self.voc_size = voc_size
+        self.pad_idx = pad_idx
 
         self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
         self.dropout = nn.Dropout(emb_dropout)
@@ -42,7 +45,7 @@ class Decoders(nn.Module):
         nn.init.normal_(self.linear.weight, std = 0.02)
         nn.init.normal_(self.linear.bias, 0)
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
         '''
         param:
             input: sequence of words
@@ -53,14 +56,17 @@ class Decoders(nn.Module):
                 result: [B, S, D_model]
         '''
         batch_size, seq_len = input.size()
+        # embedding
         emb = self.dropout(self.emb(input)) # [B, S, D_model]
-        # TODO: +1은 왜 해주지?
-        position = torch.arange(seq_len, device=input.device, dtype=input.dtype).repeat(batch_size, 1) + 1 
-        emb += self.pos_dropout(self.pos_emb(position))
-        pad_mask = get_attn_subsequent_mask(emb)
+        position = torch.arange(seq_len, device=input.device, dtype=input.dtype).repeat(batch_size, 1) # [B, S, D_model]
+        emb += self.pos_dropout(self.pos_emb(position)) # [B, S, D_model]
+
+        # masking
+        subsequent_pad_mask = get_attn_subsequent_mask(emb)
+        mask = pad_mask + subsequent_pad_mask
 
         for model in self.models:
-            input = model(input, pad_mask)
+            input = model(input, mask)
 
         return input
 
@@ -75,7 +81,7 @@ class Decoder(nn.Module):
         self.layer_norm2 = nn.LayerNorm(d_model)
         self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> None:
+    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         '''
         param:
             input: input tensor. Embedded words
@@ -220,7 +226,7 @@ class MultipleChoiceHead(nn.Module):
         pass
 
 # reference: https://github.com/graykode/nlp-tutorial/blob/master/5-1.Transformer/Transformer(Greedy_decoder)_Torch.ipynb
-def get_attn_pad_mask(seq_q, seq_k, pad_idx):
+def get_attn_pad_mask(seq_q: torch.Tensor, seq_k: torch.Tensor, pad_idx: int):
     batch_size, len_q = seq_q.size()
     batch_size, len_k = seq_k.size()
     pad_attn_mask = seq_k.data.eq(pad_idx).unsqueeze(1)  # [B, 1, S]
