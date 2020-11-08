@@ -1,7 +1,7 @@
 # reference: https://github.com/huggingface/pytorch-openai-transformer-lm/blob/master/opt.py
 import math
 import torch
-from torch.optim import Optimizer
+import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
 
 def warmup_cosine(x, warmup=0.002):
@@ -22,8 +22,7 @@ SCHEDULES = {
     'warmup_linear':warmup_linear,
 }
 
-
-class OpenAIAdam(Optimizer):
+class OpenAIAdam(optim.Optimizer):
     """Implements Open AI version of Adam algorithm with weight decay fix.
     """
     def __init__(self, params, lr, schedule, warmup, t_total,

@@ -3,18 +3,17 @@ import torch.nn as nn
 
 class LanguageModeling(nn.Module):
     # Unsupervised pre-training
-    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, pad_idx: int,
-                num_decoder: int, num_heads: int, dropout: float) -> None:
+    def __init__(self, voc_size:int, seq_len: int=512, d_model: int=768, d_ff:int=3072, pad_idx: int=1,
+                num_decoder: int=12, num_heads: int=12, dropout: float=0.1) -> None:
         super(LanguageModeling, self).__init__()
         self.pad_idx = pad_idx
 
         self.decoders = Decoders(voc_size, seq_len, d_model, d_ff, pad_idx, num_decoder, num_heads, dropout)
 
-        
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         '''
         param:
-            input: sequence of words
+            input: a batch of sequences of words
         dim:
             input:
                 input: [B, S]
@@ -37,8 +36,9 @@ class Decoders(nn.Module):
 
         self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
         self.dropout = nn.Dropout(emb_dropout)
+
         # positional embedding is trainable
-        self.pos_emb = nn.Embedding(num_embeddings=seq_len+1, embedding_dim=d_model)
+        self.pos_emb = nn.Embedding(num_embeddings=seq_len+1, embedding_dim=d_model) # [512, d_model]
         self.pos_dropout = nn.Dropout(emb_dropout)
         self.models = nn.ModuleList([Decoder(d_model, d_ff, seq_len, num_heads, dropout=dec_dropout) for i in range(num_decoder)])
 
@@ -237,5 +237,3 @@ def get_attn_subsequent_mask(seq):
     subsequent_mask = torch.zeros(attn_shape)
     subsequent_mask.triu_(1) # [B, S, S]
     return subsequent_mask
-
-print(True)
