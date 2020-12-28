@@ -2,12 +2,37 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-class LanguageModeling(nn.Module):
+class MaskedLanguageModeling(nn.Module):
     def __init__(self, voc_size:int=30000, seq_len: int=512, d_model: int=768, d_ff:int=3072, pad_idx: int=1,
                 num_encoder: int=12, num_heads: int=12, dropout: float=0.1):
-        super(LanguageModeling, self).__init__()
+        super(MaskedLanguageModeling, self).__init__()
         self.pad_idx = pad_idx
+        self.emb = BERTEmbedding(seq_len, voc_size, d_model, dropout)
+        self.encoders = Encoders(voc_size, seq_len, d_model, d_ff, pad_idx, num_encoder, num_heads, dropout)
 
+    def forward(self, input: torch.Tensor, seg: torch.Tensor) -> torch.Tensor:
+        '''
+        param:
+            input: a batch of sequences of words
+        dim:
+            input:
+                input: [B, S]
+            output:
+                result: [B, S, V]
+        '''
+        pad_mask = get_attn_pad_mask(input, input, self.pad_idx)
+
+        emb = self.emb(input, seg)
+        attn = self.encoders(emb, pad_mask) # [B, S, D_model]
+        output = self.linear(attn) # [B, S, voc_size]
+
+        return output # [B, S, voc_size]
+
+class NextSentencePrediction(nn.Module):
+    def __init__(self, voc_size:int=30000, seq_len: int=512, d_model: int=768, d_ff:int=3072, pad_idx: int=1,
+                num_encoder: int=12, num_heads: int=12, dropout: float=0.1):
+        super(MaskedLanguageModeling, self).__init__()
+        self.pad_idx = pad_idx
         self.encoders = Encoders(voc_size, seq_len, d_model, d_ff, pad_idx, num_encoder, num_heads, dropout)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -18,7 +43,7 @@ class LanguageModeling(nn.Module):
             input:
                 input: [B, S]
             output:
-                result: [B, S, D_model]
+                result: [B, S, V]
         '''
         pad_mask = get_attn_pad_mask(input, input, self.pad_idx)
         attn = self.encoders(input, pad_mask) # [B, S, D_model]
@@ -27,46 +52,55 @@ class LanguageModeling(nn.Module):
         return output # [B, S, voc_size]
 
 class Encoders(nn.Module):
-    def __init__(self, voc_size:int, seq_len: int, d_model: int, d_ff:int, num_encoder: int, num_heads: int, dropout: float):
+    def __init__(self, seq_len: int, d_model: int, d_ff:int, num_encoder: int, num_heads: int, dropout: float):
         super(Encoders, self).__init__()
         self.d_model = d_model
-        self.voc_size = voc_size
-
-        self.emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
-        self.pos_enc = PositionalEncoding(d_model, seq_len, dropout)
         self.models = nn.ModuleList([Encoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_encoder)])
         
-    def forward(self, x, enc_mask):
-        # input: [B, S]
-        x_emb = self.emb(x) * torch.sqrt(torch.tensor(self.d_model).float()) # -> [B, S, D_model]
-        x_emb = self.pos_enc(x_emb) # [B, S, d_model]
-    
+    def forward(self, tokens, enc_mask):
+        # input: [B, S, D_model]
         for model in self.models:
-            x_emb = model(x_emb, enc_mask)
+            tokens = model(tokens, enc_mask)
 
-        return x_emb
+        return tokens
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, seq_len: int, dropout: int=0.1):
         super(PositionalEncoding, self).__init__()
-
+        self.seq_len = seq_len
         self.dropout = nn.Dropout(dropout)
-        pe = torch.zeros([seq_len, d_model]) # [S, D_model]
-        pos = torch.arange(0, seq_len).unsqueeze(1).float() # [S, 1]
-
-        # broadcasting
-        pe += pos # [S, d_model]
-        idx = torch.arange(0, d_model, 2).float() # [S/2]
-        idx = (1/10000.0) ** (2*idx)/d_model # [S/2]
-
-        # broadcasting
-        pe[:, 0::2] = torch.sin(pe[:, 0::2]*idx) # [S/2, D_model]
-        pe[:, 1::2] = torch.cos(pe[:, 1::2]*idx) # [S/2, D_model]
-
-        self.register_buffer('pe', pe) # the intance has the attribute `pe`
+        self.emb = nn.Embedding(seq_len, d_model)
         
-    def forward(self, emb):
-        return self.dropout(emb + self.pe) # [B, S, D_model]
+    def forward(self, x: torch.Tensor):
+        # x: [B, S]. x is tokens
+        pos = torch.arange(self.seq_len, dtype=torch.long, device=x.device) # [S]
+        pos = pos.unsqueeze(0).expand(x.size()) # [1, S] -> [B, S]
+        pos_emb = self.emb(pos)
+        return self.dropout(pos_emb) # [B, S, D_model]
+
+class BERTEmbedding(nn.Module):
+    """
+    Embeddings for BERT.
+    It includes segmentation embedding, token embedding and positional embedding.
+    I add dropout for every embedding like original transformer.
+    """
+    def __init__(self, seq_len: int=512, voc_size: int=30000, d_model: int=768, dropout: float=0.1) -> None:
+        self.tok_emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
+        self.tok_dropout = nn.Dropout(dropout)
+        self.seg_emb = nn.Embedding(2, d_model)
+        self.seg_dropout = nn.Dropout(dropout)
+        self.pos_emb = PositionalEncoding(d_model, seq_len, dropout)
+
+    def forward(self, tokens: torch.Tensor, seg: torch.Tensor):
+        """
+        tokens: [B, S]
+        seg: [B, S]. seg is binary tensor. 0 indicates that the corresponding token for its index belongs sentence A
+        """
+        tok_emb = self.tok_emb(tokens)
+        seg_emb = self.seg_emb(seg)
+        pos_emb = self.pos_emb(tokens)
+
+        return self.tok_dropout(tok_emb) + self.seg_dropout(seg_emb) + pos_emb
 
 class Encoder(nn.Module):
     def __init__(self, d_model: int, d_ff:int, seq_len: int, num_enc_heads: int, dropout: float):

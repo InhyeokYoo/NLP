@@ -20,12 +20,12 @@ No implementation. Just simple tutorials for sub-word models.
 - Byte Pair Encoding (BPE)
 - SentencePiece
 
-## 3. Self-attention (?? - 09.04.20) 
+## 3. Self-attention (?? - 2020 Sep 04) 
 
 An implementation of the model [Attention is all you need](https://arxiv.org/abs/1706.03762) of Vaswani., et al. (2017), aka Transformer.
 I implement transformer archtecture, label smoothing, beam search and warm-up steps. There are several things that differ to the original paper.
 
-## 4. ELMo (09.04.20 - 10.09.20)
+## 4. ELMo (2020 Sep 04 - 2020 Oct 09)
 
 An implementation of [Deep contextualized word representations](https://arxiv.org/abs/1802.05365) of Peters et al. (2018). 
 The module also includes character embedding of [Kim et al. (2015)](https://arxiv.org/pdf/1508.06615.pdf).
@@ -33,5 +33,7 @@ The module also includes character embedding of [Kim et al. (2015)](https://arxi
 - ELMo
 - Character-Aware Neural Language Models
 
-## 5. GPT-1 (10.16.20 - )
+## 5. GPT-1 (2020 Oct 16 - )
+
+## 6. BERT (2020 Nov 12 - 2020 Dec 28)
 
