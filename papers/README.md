@@ -35,5 +35,5 @@ The module also includes character embedding of [Kim et al. (2015)](https://arxi
 
 ## 5. GPT-1 (2020 Oct 16 - )
 
-## 6. BERT (2020 Nov 12 - 2020 Dec 28)
+## 6. BERT (2020 Nov 12 - 2021 Jan 03)
 

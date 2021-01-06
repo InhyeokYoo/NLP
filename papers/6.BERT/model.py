@@ -3,12 +3,60 @@ import torch
 import torch.nn as nn
 
 class MaskedLanguageModeling(nn.Module):
+    def __init__(self, bert: nn.Module, voc_size:int=30000):
+        super(MaskedLanguageModeling, self).__init__()
+        self.bert = bert
+        d_model = bert.emb.tok_emb.weight.size(1)
+        self.linear = nn.Linear(d_model, voc_size)
+
+    def forward(self, input: torch.Tensor, seg: torch.Tensor) -> torch.Tensor:
+        '''
+        param:
+            input: a batch of sequences of words
+            seg: Segmentation embedding for input tokens
+        dim:
+            input:
+                input: [B, S]
+                seg: [B, S]
+            output:
+                result: [B, S, V]
+        '''
+        output = self.bert(input, seg) # [B, S, D_model]
+        output = self.linear(output) # [B, S, voc_size]
+
+        return output # [B, S, voc_size]
+
+class NextSentencePrediction(nn.Module):
+    def __init__(self, bert: nn.Module):
+        super(NextSentencePrediction, self).__init__()
+        self.bert = bert
+        d_model = bert.emb.tok_emb.weight.size(1)
+        self.linear = nn.Linear(d_model, 2)
+
+    def forward(self, input: torch.Tensor, seg: torch.Tensor) -> torch.Tensor:
+        '''
+        param:
+            input: a batch of sequences of words
+            seg: Segmentation embedding for input tokens
+        dim:
+            input:
+                input: [B, S]
+                seg: [B, S]
+            output:
+                result: [B, S, V]
+        '''
+        output = self.bert(input, seg) # [B, S, D_model]
+        output = self.linear(output) # [B, S, 2]
+
+        return output[:, 0, :] # [B, 2]
+
+class BertModel(nn.Module):
     def __init__(self, voc_size:int=30000, seq_len: int=512, d_model: int=768, d_ff:int=3072, pad_idx: int=1,
                 num_encoder: int=12, num_heads: int=12, dropout: float=0.1):
-        super(MaskedLanguageModeling, self).__init__()
+        super(BertModel, self).__init__()
         self.pad_idx = pad_idx
         self.emb = BERTEmbedding(seq_len, voc_size, d_model, dropout)
-        self.encoders = Encoders(voc_size, seq_len, d_model, d_ff, pad_idx, num_encoder, num_heads, dropout)
+        self.encoders = Encoders(seq_len, d_model, d_ff, num_encoder, num_heads, dropout)
 
     def forward(self, input: torch.Tensor, seg: torch.Tensor) -> torch.Tensor:
         '''
@@ -22,39 +70,14 @@ class MaskedLanguageModeling(nn.Module):
         '''
         pad_mask = get_attn_pad_mask(input, input, self.pad_idx)
 
-        emb = self.emb(input, seg)
-        attn = self.encoders(emb, pad_mask) # [B, S, D_model]
-        output = self.linear(attn) # [B, S, voc_size]
+        emb = self.emb(input, seg) # [B, S, D_model]
+        output = self.encoders(emb, pad_mask) # [B, S, D_model]
 
-        return output # [B, S, voc_size]
-
-class NextSentencePrediction(nn.Module):
-    def __init__(self, voc_size:int=30000, seq_len: int=512, d_model: int=768, d_ff:int=3072, pad_idx: int=1,
-                num_encoder: int=12, num_heads: int=12, dropout: float=0.1):
-        super(MaskedLanguageModeling, self).__init__()
-        self.pad_idx = pad_idx
-        self.encoders = Encoders(voc_size, seq_len, d_model, d_ff, pad_idx, num_encoder, num_heads, dropout)
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        '''
-        param:
-            input: a batch of sequences of words
-        dim:
-            input:
-                input: [B, S]
-            output:
-                result: [B, S, V]
-        '''
-        pad_mask = get_attn_pad_mask(input, input, self.pad_idx)
-        attn = self.encoders(input, pad_mask) # [B, S, D_model]
-        output = self.linear(attn) # [B, S, voc_size]
-
-        return output # [B, S, voc_size]
+        return output # [B, S, D_model]
 
 class Encoders(nn.Module):
     def __init__(self, seq_len: int, d_model: int, d_ff:int, num_encoder: int, num_heads: int, dropout: float):
         super(Encoders, self).__init__()
-        self.d_model = d_model
         self.models = nn.ModuleList([Encoder(d_model, d_ff, seq_len, num_heads, dropout=dropout) for i in range(num_encoder)])
         
     def forward(self, tokens, enc_mask):
@@ -82,9 +105,10 @@ class BERTEmbedding(nn.Module):
     """
     Embeddings for BERT.
     It includes segmentation embedding, token embedding and positional embedding.
-    I add dropout for every embedding like original transformer.
+    I add dropout for every embedding layer just like the original transformer.
     """
     def __init__(self, seq_len: int=512, voc_size: int=30000, d_model: int=768, dropout: float=0.1) -> None:
+        super(BERTEmbedding, self).__init__()
         self.tok_emb = nn.Embedding(num_embeddings=voc_size, embedding_dim=d_model)
         self.tok_dropout = nn.Dropout(dropout)
         self.seg_emb = nn.Embedding(2, d_model)
@@ -96,11 +120,11 @@ class BERTEmbedding(nn.Module):
         tokens: [B, S]
         seg: [B, S]. seg is binary tensor. 0 indicates that the corresponding token for its index belongs sentence A
         """
-        tok_emb = self.tok_emb(tokens)
-        seg_emb = self.seg_emb(seg)
-        pos_emb = self.pos_emb(tokens)
+        tok_emb = self.tok_emb(tokens) # [B, S, d_model]
+        seg_emb = self.seg_emb(seg) # [B, S, d_model]
+        pos_emb = self.pos_emb(tokens) # [B, S, d_model]
 
-        return self.tok_dropout(tok_emb) + self.seg_dropout(seg_emb) + pos_emb
+        return self.tok_dropout(tok_emb) + self.seg_dropout(seg_emb) + pos_emb  # [B, S, d_model]
 
 class Encoder(nn.Module):
     def __init__(self, d_model: int, d_ff:int, seq_len: int, num_enc_heads: int, dropout: float):
@@ -208,14 +232,14 @@ class PositionWiseFC(nn.Module):
         super(PositionWiseFC, self).__init__()
 
         self.fc1 = nn.Linear(d_model, d_ff)
-        self.relu = nn.ReLU()
+        self.gelu = nn.GELU()
         self.fc2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
         # [B, S, D]
         x = self.fc1(x) # [B, S, D_ff]
-        x = self.relu(x) # [B, S, D_ff]
+        x = self.gelu(x) # [B, S, D_ff]
         x = self.fc2(x) # [B, S, D]
         x = self.dropout(x)
 
@@ -227,38 +251,3 @@ def get_attn_pad_mask(seq_q, seq_k, pad_idx):
     batch_size, len_k = seq_k.size()
     pad_attn_mask = seq_k.data.eq(pad_idx).unsqueeze(1)  # [B, 1, S]
     return pad_attn_mask.expand(batch_size, len_q, len_k)  # [B, S_q, S_k]
-
-def get_attn_subsequent_mask(seq):
-    attn_shape = [seq.size(0), seq.size(1), seq.size(1)] # [B, S, S]
-    subsequent_mask = torch.zeros(attn_shape)
-    subsequent_mask.triu_(1) # [B, S, S]
-    return subsequent_mask
-
-# reference: https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/master/train.py#L38
-def cal_loss(pred, target, ignore_idx, smoothing: Optional[float]=None):
-    ''' 
-    Calculate cross entropy loss, apply label smoothing if needed
-    param:
-        pred: the result of the model
-        target: ground truth for the input
-        ignore_idx: a index for ignoring when calcuate log-softmax
-        smoothing: Optional. smoothing parameter for label smoothing
-    shape:
-        pred: [batch * (seq_len-1), vocab]
-        [Batch_size * (Seq_len-1)]
-    '''
-    target = target.contiguous().view(-1)
-
-    if smoothing != None:
-        n_class = pred.size(1)
-
-        one_hot = torch.zeros_like(pred).scatter(1, target.view(-1, 1), 1)
-        one_hot = one_hot * (1 - smoothing) + (1 - one_hot) * smoothing / (n_class - 2)
-        log_prb = nn.functional.log_softmax(pred, dim=1)
-
-        non_pad_mask = target.ne(ignore_idx)
-        loss = - (one_hot * log_prb).sum(dim=1)
-        loss = loss.masked_select(non_pad_mask).mean()  # average later
-    else:
-        loss = nn.functional.cross_entropy(pred, target, ignore_index=ignore_idx, reduction='mean')
-    return loss
