@@ -1,6 +1,6 @@
 # Readme.md
 
-An implementation of the model [Attention is all you need](https://arxiv.org/abs/1706.03762) of Vaswani., et al. (2017).
+An implementation of the model [Attention is all you need](https://arxiv.org/abs/1706.03762) of Vaswani et al. (2017).
 
 I implement transformer archtecture, label smoothing, beam search and warm-up steps. There are several things that differ to the original paper.
 
